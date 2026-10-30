@@ -32,6 +32,7 @@
   const flowLayer = L.layerGroup().addTo(map);
   const vesselLayer = L.layerGroup().addTo(map);
   const whatifLayer = L.layerGroup().addTo(map);
+  const forecastLayer = L.layerGroup().addTo(map);
   map.createPane("flowPane").style.zIndex = 450;
   map.getPane("flowPane").style.pointerEvents = "none";
   const simPane = map.createPane("simPane");
@@ -48,7 +49,8 @@
   const sim = {
     active: false, t: 0, playing: false, last: 0, D: 9000, T0: 0, T1: 1,
     frames: [], cents: [], cloud: [], slick: [], slickKm2: 0, origin: null, release: null, vessels: [], ranked: false,
-    showSlick: false, showOrigin: false, showParticles: false, showVessels: false, showFlow: false,
+    showSlick: false, showOrigin: false, showParticles: false, showVessels: false, showFlow: false, showForecast: false, showImpact: false,
+    forecast: [], forecastMarker: null, forecastStep: 0,
   };
 
   /* ---------- geometry helpers ---------- */
@@ -608,7 +610,13 @@
   const tl = el("div", "guided-timeline");
   tl.hidden = true;
   tl.innerHTML = '<button type="button" class="gt-play" aria-label="Play or pause"></button><div class="gt-mid"><input class="gt-range" type="range" min="0" max="1000" value="0" aria-label="Simulation time"><div class="gt-ends"><span>Possible release</span><span>Slick observation</span></div></div><div class="gt-clock"><b>--:--</b><span></span></div>';
-  stage.append(gauges, legend, north, tl);
+  const forecastTimeline = el("div", "forecast-timeline");
+  forecastTimeline.hidden = true;
+  forecastTimeline.innerHTML = '<div class="forecast-timeline-head"><button type="button" class="forecast-play">▶ Play 10 days</button><strong class="forecast-readout">Slick observed</strong><span class="forecast-synthetic-tag">SIMULATED FORECAST</span></div><div class="forecast-days" role="group" aria-label="Ten daily forecast notches"></div>';
+  stage.append(gauges, legend, north, tl, forecastTimeline);
+  const forecastPlayButton = forecastTimeline.querySelector(".forecast-play");
+  const forecastReadout = forecastTimeline.querySelector(".forecast-readout");
+  const forecastDays = forecastTimeline.querySelector(".forecast-days");
   playBtn2 = tl.querySelector(".gt-play"); clockRange = tl.querySelector(".gt-range");
   clockB = tl.querySelector(".gt-clock b"); clockS = tl.querySelector(".gt-clock span");
   const ICON_PLAY = '<svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg>', ICON_PAUSE = '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h3v11h-3zm6 0h3v11h-3z"/></svg>';
@@ -629,6 +637,8 @@
     if (sim.showParticles) add("gl-oil", "#ffb15e", "Modeled oil (synthetic)");
     if (sim.showVessels && !sim.ranked) add("gl-line", NEUTRAL, "Vessel track (fictional AIS)");
     if (sim.showVessels && sim.ranked) { add("gl-line", "#ff6b5e", "Top review lead"); add("gl-line", "#ffb347", "Other candidates"); }
+    if (sim.showForecast) add("gl-oil-stream", "#202529", "10-day oil stream (synthetic)");
+    if (sim.showImpact) add("gl-teal", "#ff766f", "Illustrative impact zone");
     legend.hidden = legend.childElementCount === 0;
   }
 
@@ -645,6 +655,12 @@
       text: "Ships broadcast their position with AIS. Four fictional vessels share the same clock as the drift: two from the backend run and two extra tracks. Ticks mark the hours, and a vessel appears only between its timestamped reports." },
     { label: "Find vessel leads", dwell: 0, title: "6 · Rank the vessel leads",
       text: "Each vessel gets a review priority from three factors: how close it came to the origin area, how close it was to the drifting oil at the same time, and how well its AIS reports cover the release window. It is an order for investigators, not the chance that a vessel is guilty." },
+    { label: "Forecast displacement", dwell: 30000, title: "7 · Forecast further displacement",
+      text: "Watch the synthetic slick move in ten daily forecast notches toward Madagascar. The gray-black stream bends between days, and each day’s slick patch and map label appear only when the animation reaches that stop. This is generated demo data, not a real forecast." },
+    { label: "Find coastal impact area", dwell: 5000, title: "8 · Likely coastal impact area",
+      text: "The demo carries the day-ten slick position offshore, then highlights the nearby Toamasina coast as the illustrative potentially affected landmark. The landfall area is generated for this demo; no coastline model or real forecast has identified a real beach." },
+    { label: "Prepare warning", dwell: 0, title: "9 · Prepare a warning",
+      text: "These draft notices go only to fictional demo recipients in this screen. A real advisory needs validated forecasts, an authorized human approver, and a verified recipient list. Nothing is sent to fishermen, ferries, or ships." },
   ];
 
   side.append(el("div", "guided-kicker", "BUTTON-LED SIMULATION"),
@@ -850,6 +866,219 @@
     strip.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
   }
 
+  const MADAGASCAR_TARGET = [50.15, -18.15]; // Day-ten slick position offshore of Madagascar, [longitude, latitude]
+  const COASTAL_LANDMARK = [49.45, -18.15]; // Toamasina coast, shown separately as the potential impact area
+  let forecastTimer = null, forecastPauseTimer = null, forecastPlaying = false, forecastCursor = 0, forecastBaseTime = 0, forecastStream = null, forecastReachedDays = new Set();
+  const forecastClockText = (day) => {
+    const tick = new Date(forecastBaseTime + day * 86400000);
+    const date = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" }).format(tick);
+    return "Day " + day + " · " + date + " · 8:00 AM";
+  };
+  function selectForecastNotch(day) {
+    forecastCursor = day;
+    forecastPlaying = false;
+    cancelAnimationFrame(forecastTimer); clearTimeout(forecastPauseTimer);
+    forecastPlayButton.textContent = "▶ Play 10 days";
+    renderForecastAt(day);
+  }
+  function syncForecastControls(day) {
+    forecastReadout.textContent = day < 0.5 ? "Slick observed · starting point" : forecastClockText(Math.max(1, Math.min(10, Math.round(day))));
+    forecastDays.querySelectorAll("button").forEach((button) => {
+      const n = Number(button.dataset.day);
+      button.classList.toggle("is-current", n === Math.round(day));
+      button.setAttribute("aria-label", forecastClockText(n));
+    });
+  }
+  for (let day = 1; day <= 10; day += 1) {
+    const tick = el("button", "forecast-notch");
+    tick.type = "button"; tick.dataset.day = String(day); tick.setAttribute("aria-label", forecastClockText(day));
+    tick.append(el("i", "notch"), el("span", "day-label", "Day " + day), el("span", "day-time", "8:00 AM"));
+    tick.addEventListener("click", () => selectForecastNotch(day));
+    forecastDays.append(tick);
+  }
+  forecastPlayButton.addEventListener("click", () => {
+    if (forecastPlaying) {
+      forecastPlaying = false; cancelAnimationFrame(forecastTimer); clearTimeout(forecastPauseTimer);
+      forecastPlayButton.textContent = "▶ Resume forecast"; return;
+    }
+    if (forecastCursor >= 10) selectForecastNotch(0);
+    forecastPlaying = true; forecastPlayButton.textContent = "Ⅱ Pause";
+    const advanceDay = (fromDay) => {
+      if (!forecastPlaying) return;
+      const toDay = fromDay + 1, start = performance.now(), duration = 2400;
+      const frame = (now) => {
+        if (!forecastPlaying) return;
+        const raw = Math.min(1, (now - start) / duration);
+        const eased = raw * raw * (3 - 2 * raw);
+        forecastCursor = fromDay + eased;
+        renderForecastAt(forecastCursor);
+        if (raw < 1) forecastTimer = requestAnimationFrame(frame);
+        else {
+          forecastCursor = toDay; renderForecastAt(toDay);
+          if (toDay >= 10) { forecastPlaying = false; forecastPlayButton.textContent = "↻ Replay 10 days"; }
+          else forecastPauseTimer = setTimeout(() => advanceDay(toDay), 450);
+        }
+      };
+      forecastTimer = requestAnimationFrame(frame);
+    };
+    advanceDay(Math.floor(forecastCursor));
+  });
+
+  function buildForecast() {
+    forecastLayer.clearLayers(); forecastStream = null; forecastReachedDays = new Set();
+    const rings = sim.slick;
+    const center = rings.length
+      ? rings.flat().reduce((a, q) => [a[0] + q[0] / rings.flat().length, a[1] + q[1] / rings.flat().length], [0, 0])
+      : (sim.release || result.simulation.slick_point.coordinates);
+    const start = center;
+    const controlA = [start[0] - 2.0, start[1] - 0.5], controlB = [53.5, -15.2], end = MADAGASCAR_TARGET;
+    const dayPositions = Array.from({ length: 11 }, (_, day) => {
+      const t = day / 10, u = 1 - t;
+      const x = u ** 3 * start[0] + 3 * u ** 2 * t * controlA[0] + 3 * u * t ** 2 * controlB[0] + t ** 3 * end[0];
+      const y = u ** 3 * start[1] + 3 * u ** 2 * t * controlA[1] + 3 * u * t ** 2 * controlB[1] + t ** 3 * end[1];
+      const bend = Math.sin(day * 1.45) * 0.17 * (1 - t);
+      return [x + bend, y + Math.cos(day * 1.13) * 0.11 * (1 - t)];
+    });
+    dayPositions[0] = start; dayPositions[10] = end;
+    sim.forecast = [dayPositions]; sim.forecastStep = 0;
+    const [lon, lat] = start;
+    L.circleMarker([lat, lon], { radius: 8, color: "#fff", weight: 2, fillColor: "#ffb15e", fillOpacity: 1 })
+      .bindTooltip("Starting slick · synthetic", { permanent: true, direction: "top" }).addTo(forecastLayer);
+    forecastStream = {
+      outer: L.polygon([], { stroke: false, fillColor: "#737b80", fillOpacity: 0.25, interactive: false }).addTo(forecastLayer),
+      middle: L.polygon([], { stroke: false, fillColor: "#3d4347", fillOpacity: 0.42, interactive: false }).addTo(forecastLayer),
+      core: L.polygon([], { stroke: false, fillColor: "#15191c", fillOpacity: 0.82, interactive: false }).addTo(forecastLayer),
+    };
+    const bounds = L.latLngBounds([[lat, lon], [end[1], end[0]]]);
+    map.fitBounds(bounds, { padding: [80, 80], maxZoom: 7, animate: !reduceMotion });
+    const observed = new Date(result.scene?.datetime || result.detection?.acquired_at || Date.now());
+    forecastBaseTime = Date.UTC(observed.getUTCFullYear(), observed.getUTCMonth(), observed.getUTCDate(), 8, 0);
+    chip("", "10-DAY OUTLOOK · SIMULATED DEMO");
+    msg("Synthetic 10-day route toward Madagascar · generated for this demo, not a real forecast.");
+    renderForecastAt(0);
+    return { center, ends: [end], dayPositions };
+  }
+
+  function addReachedForecastDay(day) {
+    if (day < 1 || day > 10 || forecastReachedDays.has(day)) return;
+    const path = sim.forecast[0], point = path[day], previous = path[day - 1], next = path[Math.min(10, day + 1)];
+    const bearing = Math.atan2((next[0] - previous[0]) * Math.cos(point[1] * Math.PI / 180), next[1] - previous[1]);
+    const alongAxis = day === 10 ? 24 : 11, acrossAxis = day === 10 ? 9 : 4.5;
+    const patch = Array.from({ length: 24 }, (_, i) => {
+      const angle = i * Math.PI * 2 / 24, alongKm = alongAxis * Math.cos(angle), acrossKm = acrossAxis * Math.sin(angle);
+      const eastKm = alongKm * Math.sin(bearing) + acrossKm * Math.cos(bearing);
+      const northKm = alongKm * Math.cos(bearing) - acrossKm * Math.sin(bearing);
+      return [point[1] + northKm / 111.195, point[0] + eastKm / (111.195 * Math.cos(point[1] * Math.PI / 180))];
+    });
+    L.polygon(patch, { stroke: false, fillColor: day === 10 ? "#171b1e" : "#333a3e", fillOpacity: day === 10 ? 0.82 : 0.68 })
+      .bindPopup("Day " + day + " synthetic slick patch · " + forecastClockText(day)).addTo(forecastLayer);
+    L.circleMarker([point[1], point[0]], { radius: day === 10 ? 4.5 : 3.2, color: "#e6e9e8", weight: 1, fillColor: "#1f2427", fillOpacity: 0.95 })
+      .bindTooltip("Day " + day + " · 8:00 AM", {
+        permanent: true, direction: day % 2 ? "top" : "bottom", offset: [0, day % 2 ? -4 : 4],
+        className: "forecast-day-tooltip", opacity: 0.98,
+      }).addTo(forecastLayer);
+    forecastReachedDays.add(day);
+  }
+
+  function renderForecastAt(dayFloat) {
+    if (!sim.forecast?.length || !forecastStream) return;
+    const path = sim.forecast[0], day = clamp(dayFloat, 0, 10), whole = Math.min(9, Math.floor(day)), fraction = day - whole;
+    const a = path[whole], b = path[whole + 1], center = [a[0] + (b[0] - a[0]) * fraction, a[1] + (b[1] - a[1]) * fraction];
+    const visible = path.slice(0, whole + 1);
+    if (fraction > 0.001) visible.push(center);
+    if (visible.length < 2) visible.push([center[0] + 0.0001, center[1] + 0.0001]);
+    const plumeRing = (halfWidthKm, layerSeed) => {
+      const left = [], right = [];
+      visible.forEach((point, i) => {
+        const prev = visible[Math.max(0, i - 1)], next = visible[Math.min(visible.length - 1, i + 1)];
+        const lat = point[1], east = (next[0] - prev[0]) * Math.cos(lat * Math.PI / 180) * 111.195;
+        const north = (next[1] - prev[1]) * 111.195, length = Math.max(0.001, Math.hypot(east, north));
+        const edgeNoise = 0.82 + Math.abs(hash(i, layerSeed, 31)) * 0.34;
+        const taper = 0.55 + 0.45 * Math.sin(Math.PI * i / Math.max(1, visible.length - 1));
+        const width = halfWidthKm * edgeNoise * taper;
+        const nx = -north / length, ny = east / length;
+        const kmLon = Math.max(1, 111.195 * Math.cos(lat * Math.PI / 180));
+        left.push([lat + ny * width / 111.195, point[0] + nx * width / kmLon]);
+        right.push([lat - ny * width / 111.195, point[0] - nx * width / kmLon]);
+      });
+      return left.concat(right.reverse());
+    };
+    // Nested, irregular bands make a tapered oil slick plume instead of discrete bubbles.
+    forecastStream.outer.setLatLngs(plumeRing(4 + day * 1.05, 1));
+    forecastStream.middle.setLatLngs(plumeRing(2.2 + day * 0.58, 2));
+    forecastStream.core.setLatLngs(plumeRing(0.8 + day * 0.3, 3));
+    for (let reached = 1; reached <= Math.floor(day); reached += 1) addReachedForecastDay(reached);
+    syncForecastControls(day);
+  }
+
+  function stepForecast() {
+    sim.showVessels = false; sim.ranked = false;
+    sim.showSlick = false; sim.showOrigin = false; sim.showParticles = false; sim.showFlow = false; sim.showForecast = true; sim.showImpact = false;
+    flowOn = false; flowLayer.clearLayers(); map.getPane("flowPane").classList.add("is-dim");
+    gauges.querySelector(".g-flow")?.remove();
+    vesselLayer.clearLayers(); forecastLayer.clearLayers(); cancelAnimationFrame(forecastTimer); clearTimeout(forecastPauseTimer);
+    forecastCursor = 0; forecastPlaying = false; forecastTimeline.hidden = false; tl.hidden = true;
+    const forecast = buildForecast();
+    renderForecastStrip(forecast.ends, false);
+    if (reduceMotion) selectForecastNotch(10);
+    else forecastPlayButton.click();
+    renderLegend();
+  }
+
+  function renderForecastStrip(ends, showImpact, impactCount = 0) {
+    strip.replaceChildren(el("div", "eyebrow", "FORWARD DRIFT · SIMULATED DATA"),
+      el("h2", "", showImpact ? "Illustrative Madagascar impact area" : "10-day displacement forecast"));
+    const card = el("div", "forecast-summary");
+    card.append(el("strong", "", showImpact ? "Potentially affected landmark: Toamasina coast" : "Ten daily notches · 8:00 AM UTC"),
+      el("p", "", showImpact ? "The Day 10 slick remains offshore. The coastal zone marks the nearby simulated impact area; the scenario count is generated demo data, not a calibrated probability." : "The particle stream bends day by day toward Madagascar. Each map point is labeled with its day and time. Select a notch to jump to that day or play the slow daily animation."));
+    strip.append(card, el("p", "guided-disclaimer", "SIMULATION ONLY · Generated for the guided demo. Earlier ERA5 inputs are historical reanalysis, not future forecasts."));
+  }
+
+  function stepCoast() {
+    sim.showForecast = true; sim.showImpact = true;
+    forecastTimeline.hidden = false; tl.hidden = true; forecastCursor = 10;
+    cancelAnimationFrame(forecastTimer); clearTimeout(forecastPauseTimer);
+    forecastLayer.clearLayers();
+    const forecast = buildForecast();
+    const target = COASTAL_LANDMARK;
+    L.circle([target[1], target[0]], { radius: 26000, color: "#ff766f", weight: 2, dashArray: "6 5", fillColor: "#ff766f", fillOpacity: 0.18 })
+      .bindPopup("Illustrative coastal impact zone · synthetic demo").addTo(forecastLayer);
+    L.marker([target[1], target[0]], { icon: L.divIcon({ className: "impact-pin", html: "<span>TOAMASINA COAST · POTENTIAL IMPACT</span>", iconSize: [205, 24], iconAnchor: [205, 12] }) })
+      .addTo(forecastLayer);
+    L.polyline([[forecast.ends[0][1], forecast.ends[0][0]], [target[1], target[0]]], { color: "#ff766f", weight: 2, dashArray: "5 6" }).addTo(forecastLayer);
+    forecastCursor = 10; renderForecastAt(10);
+    map.fitBounds(L.latLngBounds([[forecast.ends[0][1], forecast.ends[0][0]], [target[1], target[0]]]), { padding: [70, 70], maxZoom: 9, animate: !reduceMotion });
+    const impactCount = 8;
+    renderForecastStrip(forecast.ends, true, impactCount);
+    chip("", "POTENTIAL IMPACT · SIMULATED");
+    msg("Demo coastal segment highlighted. This location is illustrative and not derived from a shoreline forecast.");
+    renderLegend();
+  }
+
+  function stepWarning() {
+    const audiences = [
+      ["Fishing crews", "12 demo contacts", "Avoid the simulated Toamasina coastal impact area · next 48 hours"],
+      ["Ferry operators", "2 demo routes", "Review route near the illustrative impact zone"],
+      ["Ships in area", "4 demo vessels", "Keep clear of the simulated advisory area"],
+    ];
+    const panel = el("div", "warning-panel");
+    panel.append(el("div", "warning-stamp", "DRAFT ADVISORY · DEMO ONLY"),
+      el("h2", "", "Potential oil impact near Toamasina, Madagascar"),
+      el("p", "", "Simulated arrival window: 3–5 days · expires in 48 hours"));
+    audiences.forEach(([name, count, body]) => {
+      const row = el("div", "warning-row");
+      row.append(el("strong", "", name), el("small", "", count), el("p", "", body)); panel.append(row);
+    });
+    const status = el("p", "warning-status", "No real people or vessels were contacted.");
+    const approve = el("button", "secondary-button", "Preview approval flow");
+    approve.type = "button";
+    approve.addEventListener("click", () => { status.textContent = "Demo approval recorded · alert remains simulated and was not sent."; approve.disabled = true; approve.textContent = "Demo reviewed"; });
+    panel.append(approve, status, el("p", "guided-disclaimer", "A real alert requires validated forecast inputs, an authorized approver, and verified recipients. This screen never sends messages."));
+    strip.replaceChildren(el("div", "eyebrow", "WARNING WORKFLOW · SIMULATED"), panel);
+    chip("", "DRAFT WARNING · NOT SENT");
+    msg("Simulated draft advisory for fictional recipients only. No notification was sent.");
+  }
+
   const dur = (a, b) => { const m = Math.round((b - a) / 60000); return Math.floor(m / 60) + "h " + pad2(m % 60) + "m"; };
   function renderStrip() {
     strip.replaceChildren(el("div", "eyebrow", "PROBABLE VESSEL LEADS BASED ON FACTORS"),
@@ -901,7 +1130,7 @@
     strip.append(el("p", "guided-disclaimer", "SIM-VESSEL-03 and 04 are extra fictional tracks scored in the browser with the same three factors; 01 and 02 use the backend scores. Review priority is a screening score, not a probability, and results do not establish responsibility."));
   }
 
-  const STEP_FNS = [stepSlick, stepWind, stepFlow, stepOrigin, stepVessels, stepRank];
+  const STEP_FNS = [stepSlick, stepWind, stepFlow, stepOrigin, stepVessels, stepRank, stepForecast, stepCoast, stepWarning];
 
   function runStep(i, force) {
     if (!result || (!force && (playing || i > done + 1))) return;
@@ -925,8 +1154,9 @@
 
   function clearAll() {
     playing = false; flowOn = false; vecCache = null; done = -1;
-    Object.assign(sim, { playing: false, t: 0, showSlick: false, showOrigin: false, showParticles: false, showVessels: false, showFlow: false, ranked: false });
-    flowLayer.clearLayers(); vesselLayer.clearLayers(); whatifLayer.clearLayers(); gauges.replaceChildren();
+    Object.assign(sim, { playing: false, t: 0, showSlick: false, showOrigin: false, showParticles: false, showVessels: false, showFlow: false, showForecast: false, showImpact: false, ranked: false });
+    flowLayer.clearLayers(); vesselLayer.clearLayers(); whatifLayer.clearLayers(); forecastLayer.clearLayers(); gauges.replaceChildren();
+    forecastPlaying = false; cancelAnimationFrame(forecastTimer); clearTimeout(forecastPauseTimer); forecastTimeline.hidden = true;
     clearInterval(whatifTimer); windCtl.hidden = true; tl.hidden = true;
     try { configureTrajectoryPlayback(null, []); } catch (error) { /* nothing playing */ }
     if (map.hasLayer(layers)) map.removeLayer(layers);

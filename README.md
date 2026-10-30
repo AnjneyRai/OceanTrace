@@ -7,7 +7,7 @@ WakeTrace is a prototype workspace for reviewing possible maritime oil-slick cas
 - **Overview** introduces the case and launches the guided practice demonstration.
 - **Map** shows the scene and case geometry, supports Copernicus Sentinel-1 search, screens imagery with a dark-feature detector and experimental AI model, runs drift analysis, and reviews vessel data.
 - **Evidence** presents observation time, the configured release search window, sources, model settings, uncertainty, and vessel-screening results.
-- **Guided synthetic demonstration** walks through six visual steps with a generated radar-style scene, animated current/oil, a possible-origin area, fictional vessel tracks, and ranked practice leads.
+- **Guided synthetic demonstration** walks through nine visual steps with a generated radar-style scene, animated current/oil, a possible-origin area, fictional vessel tracks and leads, a forward displacement illustration, a coastal impact zone, and a simulated warning workflow.
 - **Backend API** serves the frontend, processes requested real scene imagery, runs both radar screens and the real drift model, and accepts AIS exports supplied by the analyst.
 
 The bundled case and guided demonstration are synthetic. Real-data searches and analyses require internet access, and selected services need credentials.
@@ -17,7 +17,7 @@ The bundled case and guided demonstration are synthetic. Real-data searches and 
 1. Install Python 3.10 or newer and ensure python is available in PowerShell.
 2. Double-click [Start WakeTrace.bat](Start%20WakeTrace.bat) in this project folder.
 3. Keep both command windows open. The launcher starts the API on port **8002**, serves the website on port **8080**, and opens the Overview page.
-4. Select **Run one-click demo** to open the guided six-step practice workflow.
+4. Select **Run one-click demo** to open the guided nine-step practice workflow.
 
 Check the API at [http://localhost:8002/api/health](http://localhost:8002/api/health). Interactive API documentation is at [http://localhost:8002/docs](http://localhost:8002/docs).
 
@@ -38,7 +38,7 @@ In the second:
 
 Then open [http://localhost:8080](http://localhost:8080). The API and website are separate local services; leave both terminals running while you use the app.
 
-## Guided demo: six visual steps
+## Guided demo: nine visual steps
 
 Choose **Run one-click demo** on Overview. The demo creates a local radar-style practice scene, plants a fictional dark patch, runs the practice pipeline, and opens the guided Map experience. Press the step buttons in order, or use **Play all steps**. Each step adds a visual layer:
 
@@ -48,8 +48,11 @@ Choose **Run one-click demo** on Overview. The demo creates a local radar-style 
 4. **Trace back to a possible origin** — show the modeled/fictional backtrack, an uncertain origin area, and the oil-particle animation.
 5. **Vessels near the origin** — show fictional timestamped routes moving against the same exercise clock.
 6. **Rank the vessel leads** — compare fictional vessels by proximity and time coverage. A rank is practice output, not a probability of responsibility.
+7. **Forecast further displacement** — animate a synthetic 10-day particle stream from the Mauritius-area exercise toward Madagascar, with a map label and selectable notch for each day. The Day 10 slick remains offshore. This is generated demo data, not forecast API output.
+8. **Likely coastal impact area** — separately highlight the illustrative Toamasina coastal impact area. The location and scenario count are synthetic, not a real shoreline forecast.
+9. **Prepare a warning** — preview draft notices for fictional fishing crews, ferry routes, and vessels. The approval button only changes the demo screen; no message is sent.
 
-The background, slick, source point, current, and vessel tracks are generated or fictional. They are not Sentinel-1 imagery, observed wind/current, real AIS data, or evidence about an incident. The wind slider is a simplified browser-side illustration; it does not rerun the backend drift estimate. Use the **Classic view** link in the guided panel to return to the non-guided practice layout.
+The background, slick, source point, current, vessel tracks, forward trajectories, coastal impact segment, scenario count, recipients, and warning messages are generated or fictional. They are not Sentinel-1 imagery, observed wind/current, a forecast, real AIS data, actual shore impact, or evidence about an incident. The wind slider is a simplified browser-side illustration; it does not rerun the backend drift estimate. Use the **Classic view** link in the guided panel to return to the non-guided practice layout.
 
 The Map also offers **Run simulated case** for an offline practice scene. When a real Sentinel-1 scene has been loaded, the separate practice mode can plant an artificial patch on a temporary copy of that scene. Neither practice mode changes the original image or creates real incident evidence.
 
