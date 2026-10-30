@@ -1,6 +1,6 @@
-# WakeTrace
+# OceanTrace
 
-WakeTrace is a prototype workspace for reviewing possible maritime oil-slick cases. It brings together Sentinel-1 radar screening, wind/current drift backtracking, AIS evidence review, map playback, and case notes. Its outputs are possible leads with uncertainty; they do not confirm oil, identify a responsible vessel, or establish liability.
+OceanTrace is a prototype workspace for reviewing possible maritime oil-slick cases. It brings together Sentinel-1 radar screening, wind/current drift backtracking, AIS evidence review, map playback, and case notes. Its outputs are possible leads with uncertainty; they do not confirm oil, identify a responsible vessel, or establish liability.
 
 ## What is in the current version
 
